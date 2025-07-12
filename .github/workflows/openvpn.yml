@@ -49,6 +49,7 @@ jobs:
     - name: Build OpenSSL for ARM64
       run: |
         cd build/openssl-${{ github.event.inputs.openssl_version }}
+        make clean
         ./Configure android-arm64 \
           -D__ANDROID_API__=21 \
           --prefix=$PWD/../openssl_arm64 \
