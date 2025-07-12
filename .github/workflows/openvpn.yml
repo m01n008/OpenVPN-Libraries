@@ -1,0 +1,532 @@
+name: Build OpenVPN for Android
+
+on:
+  workflow_dispatch:
+    inputs:
+      openvpn_version:
+        description: 'OpenVPN version to build'
+        required: true
+        default: '2.6.9'
+      openssl_version:
+        description: 'OpenSSL version to build'
+        required: true
+        default: '1.1.1w'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential autoconf automake libtool pkg-config wget
+        
+    - name: Setup Android NDK
+      uses: nttld/setup-ndk@v1
+      with:
+        ndk-version: r25c
+        
+    - name: Set up environment
+      run: |
+        echo "ANDROID_NDK_HOME=$ANDROID_NDK_ROOT" >> $GITHUB_ENV
+        echo "NDK_ROOT=$ANDROID_NDK_ROOT" >> $GITHUB_ENV
+        echo "PATH=$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH" >> $GITHUB_ENV
+        
+    - name: Download sources
+      run: |
+        mkdir -p build
+        cd build
+        wget https://swupdate.openvpn.org/community/releases/openvpn-${{ github.event.inputs.openvpn_version }}.tar.gz
+        wget https://www.openssl.org/source/openssl-${{ github.event.inputs.openssl_version }}.tar.gz
+        
+        tar -xzf openvpn-${{ github.event.inputs.openvpn_version }}.tar.gz
+        tar -xzf openssl-${{ github.event.inputs.openssl_version }}.tar.gz
+        
+    - name: Build OpenSSL for ARM64
+      run: |
+        cd build/openssl-${{ github.event.inputs.openssl_version }}
+        ./Configure android-arm64 \
+          -D__ANDROID_API__=21 \
+          --prefix=$PWD/../openssl_arm64 \
+          --openssldir=$PWD/../openssl_arm64 \
+          -fPIC -DPIC \
+          no-shared \
+          no-tests \
+          no-ui-console
+        make -j$(nproc)
+        make install_sw
+        
+    - name: Build OpenSSL for ARM
+      run: |
+        cd build/openssl-${{ github.event.inputs.openssl_version }}
+        make clean
+        ./Configure android-arm \
+          -D__ANDROID_API__=21 \
+          --prefix=$PWD/../openssl_arm \
+          --openssldir=$PWD/../openssl_arm \
+          -fPIC -DPIC \
+          no-shared \
+          no-tests \
+          no-ui-console
+        make -j$(nproc)
+        make install_sw
+        
+    - name: Build OpenSSL for x86
+      run: |
+        cd build/openssl-${{ github.event.inputs.openssl_version }}
+        make clean
+        ./Configure android-x86 \
+          -D__ANDROID_API__=21 \
+          --prefix=$PWD/../openssl_x86 \
+          --openssldir=$PWD/../openssl_x86 \
+          -fPIC -DPIC \
+          no-shared \
+          no-tests \
+          no-ui-console
+        make -j$(nproc)
+        make install_sw
+        
+    - name: Build OpenSSL for x86_64
+      run: |
+        cd build/openssl-${{ github.event.inputs.openssl_version }}
+        make clean
+        ./Configure android-x86_64 \
+          -D__ANDROID_API__=21 \
+          --prefix=$PWD/../openssl_x86_64 \
+          --openssldir=$PWD/../openssl_x86_64 \
+          -fPIC -DPIC \
+          no-shared \
+          no-tests \
+          no-ui-console
+        make -j$(nproc)
+        make install_sw
+        
+    - name: Patch OpenVPN to disable libcap-ng
+      run: |
+        cd build/openvpn-${{ github.event.inputs.openvpn_version }}
+        # Patch platform.c to remove libcap-ng usage
+        sed -i '/#include <cap-ng.h>/d' src/openvpn/platform.c
+        sed -i 's/capng_clear(CAPNG_SELECT_BOTH);//g' src/openvpn/platform.c
+        sed -i 's/capng_apply(CAPNG_SELECT_BOTH);//g' src/openvpn/platform.c
+        # Patch configure script to skip libcap-ng check
+        sed -i '/checking for LIBCAPNG/,/;;/ s/^/#/' configure
+        # Fallback: Create a dummy libcap-ng.pc to bypass pkg-config
+        mkdir -p dummy_pkgconfig
+        cat > dummy_pkgconfig/libcap-ng.pc << 'EOF'
+        prefix=/usr
+        exec_prefix=${prefix}
+        libdir=${exec_prefix}/lib
+        includedir=${prefix}/include
+        Name: libcap-ng
+        Description: Dummy libcap-ng for bypassing checks
+        Version: 0.0.0
+        Cflags:
+        Libs:
+        EOF
+    
+    - name: Build OpenVPN for ARM64
+      run: |
+        cd build
+        mkdir -p openvpn_arm64
+        cd openvpn_arm64
+        
+        export CC=aarch64-linux-android21-clang
+        export CXX=aarch64-linux-android21-clang++
+        export AR=llvm-ar
+        export RANLIB=llvm-ranlib
+        export STRIP=aarch64-linux-android-strip
+        export PKG_CONFIG_PATH="$PWD/../dummy_pkgconfig"
+        export PKG_CONFIG_LIBDIR=""
+        export PKG_CONFIG="pkg-config"
+        
+        export CFLAGS="-fPIC -DPIC -march=armv8-a -O3 -DANDROID -D__ANDROID_API__=21 -Wl,-z,max-page-size=0x4000"
+        export LDFLAGS="-L$PWD/../openssl_arm64/lib -static-libgcc -Wl,-z,max-page-size=0x4000"
+        export CPPFLAGS="-DANDROID -D__ANDROID_API__=21 -I$PWD/../openssl_arm64/include -DHAVE_CAPNG=0"
+        
+        ../openvpn-${{ github.event.inputs.openvpn_version }}/configure \
+          --host=aarch64-linux-android \
+          --target=aarch64-linux-android \
+          --prefix=$PWD/install \
+          --enable-static \
+          --disable-shared \
+          --disable-debug \
+          --enable-small \
+          --disable-plugins \
+          --disable-management \
+          --disable-systemd \
+          --disable-iproute2 \
+          --disable-dco \
+          --disable-selinux \
+          --disable-lz4 \
+          --disable-lzo \
+          --disable-pkcs11 \
+          --disable-server \
+          --disable-multi \
+          --disable-chroot \
+          --disable-capability-dropping \
+          --with-crypto-library=openssl \
+          --without-cap-ng \
+          OPENSSL_CFLAGS="-I$PWD/../openssl_arm64/include" \
+          OPENSSL_LIBS="$PWD/../openssl_arm64/lib/libssl.a $PWD/../openssl_arm64/lib/libcrypto.a -ldl -lz" \
+          ac_cv_func_SSL_CTX_new=yes \
+          ac_cv_func_EVP_aes_256_gcm=yes \
+          ac_cv_lib_capng_capng_clear=no \
+          ac_cv_header_cap_ng_h=no \
+          ac_cv_search_capng_clear=no \
+          have_capng=no
+        
+        make -j$(nproc)
+        make install
+        
+    - name: Build OpenVPN for ARM
+      run: |
+        cd build
+        mkdir -p openvpn_arm
+        cd openvpn_arm
+        
+        export CC=armv7a-linux-androideabi21-clang
+        export CXX=armv7a-linux-androideabi21-clang++
+        export AR=llvm-ar
+        export RANLIB=llvm-ranlib
+        export STRIP=arm-linux-androideabi-strip
+        export PKG_CONFIG_PATH=""
+        export CFLAGS="-fPIC -DPIC -march=armv7-a -O3 -DANDROID -D__ANDROID_API__=21 -Wl,-z,max-page-size=0x4000"
+        export LDFLAGS="-L$PWD/../openssl_arm/lib -static-libgcc -Wl,-z,max-page-size=0x4000"
+        export CPPFLAGS="-DANDROID -D__ANDROID_API__=21 -I$PWD/../openssl_arm/include"
+        
+        ../openvpn-${{ github.event.inputs.openvpn_version }}/configure \
+          --host=armv7a-linux-androideabi \
+          --target=armv7a-linux-androideabi \
+          --prefix=$PWD/install \
+          --enable-static \
+          --disable-shared \
+          --disable-debug \
+          --enable-small \
+          --disable-plugins \
+          --disable-management \
+          --disable-systemd \
+          --disable-iproute2 \
+          --disable-dco \
+          --disable-selinux \
+          --disable-lz4 \
+          --disable-lzo \
+          --disable-pkcs11 \
+          --disable-server \
+          --disable-multi \
+          --disable-chroot \
+          --with-crypto-library=openssl \
+          OPENSSL_CFLAGS="-I$PWD/../openssl_arm/include" \
+          OPENSSL_LIBS="$PWD/../openssl_arm/lib/libssl.a $PWD/../openssl_arm/lib/libcrypto.a -ldl -lz" \
+          ac_cv_func_SSL_CTX_new=yes \
+          ac_cv_func_EVP_aes_256_gcm=yes \
+          ac_cv_lib_capng_capng_clear=no \
+          ac_cv_header_cap_ng_h=no
+          
+        make -j$(nproc)
+        make install
+        
+    - name: Build OpenVPN for x86
+      run: |
+        cd build
+        mkdir -p openvpn_x86
+        cd openvpn_x86
+        
+        export CC=i686-linux-android21-clang
+        export CXX=i686-linux-android21-clang++
+        export AR=llvm-ar
+        export RANLIB=llvm-ranlib
+        export STRIP=i686-linux-android-strip
+        export PKG_CONFIG_PATH=""
+        export CFLAGS="-fPIC -DPIC -march=i686 -O3 -DANDROID -D__ANDROID_API__=21 -Wl,-z,max-page-size=0x4000"
+        export LDFLAGS="-L$PWD/../openssl_x86/lib -static-libgcc -Wl,-z,max-page-size=0x4000"
+        export CPPFLAGS="-DANDROID -D__ANDROID_API__=21 -I$PWD/../openssl_x86/include"
+        
+        ../openvpn-${{ github.event.inputs.openvpn_version }}/configure \
+          --host=i686-linux-android \
+          --target=i686-linux-android \
+          --prefix=$PWD/install \
+          --enable-static \
+          --disable-shared \
+          --disable-debug \
+          --enable-small \
+          --disable-plugins \
+          --disable-management \
+          --disable-systemd \
+          --disable-iproute2 \
+          --disable-dco \
+          --disable-selinux \
+          --disable-lz4 \
+          --disable-lzo \
+          --disable-pkcs11 \
+          --disable-server \
+          --disable-multi \
+          --disable-chroot \
+          --with-crypto-library=openssl \
+          OPENSSL_CFLAGS="-I$PWD/../openssl_x86/include" \
+          OPENSSL_LIBS="$PWD/../openssl_x86/lib/libssl.a $PWD/../openssl_x86/lib/libcrypto.a -ldl -lz" \
+          ac_cv_func_SSL_CTX_new=yes \
+          ac_cv_func_EVP_aes_256_gcm=yes \
+          ac_cv_lib_capng_capng_clear=no \
+          ac_cv_header_cap_ng_h=no
+          
+        make -j$(nproc)
+        make install
+        
+    - name: Build OpenVPN for x86_64
+      run: |
+        cd build
+        mkdir -p openvpn_x86_64
+        cd openvpn_x86_64
+        
+        export CC=x86_64-linux-android21-clang
+        export CXX=x86_64-linux-android21-clang++
+        export AR=llvm-ar
+        export RANLIB=llvm-ranlib
+        export STRIP=x86_64-linux-android-strip
+        export PKG_CONFIG_PATH=""
+        export CFLAGS="-fPIC -DPIC -march=x86-64 -O3 -DANDROID -D__ANDROID_API__=21 -Wl,-z,max-page-size=0x4000"
+        export LDFLAGS="-L$PWD/../openssl_x86_64/lib -static-libgcc -Wl,-z,max-page-size=0x4000"
+        export CPPFLAGS="-DANDROID -D__ANDROID_API__=21 -I$PWD/../openssl_x86_64/include"
+        
+        ../openvpn-${{ github.event.inputs.openvpn_version }}/configure \
+          --host=x86_64-linux-android \
+          --target=x86_64-linux-android \
+          --prefix=$PWD/install \
+          --enable-static \
+          --disable-shared \
+          --disable-debug \
+          --enable-small \
+          --disable-plugins \
+          --disable-management \
+          --disable-systemd \
+          --disable-iproute2 \
+          --disable-dco \
+          --disable-selinux \
+          --disable-lz4 \
+          --disable-lzo \
+          --disable-pkcs11 \
+          --disable-server \
+          --disable-multi \
+          --disable-chroot \
+          --with-crypto-library=openssl \
+          OPENSSL_CFLAGS="-I$PWD/../openssl_x86_64/include" \
+          OPENSSL_LIBS="$PWD/../openssl_x86_64/lib/libssl.a $PWD/../openssl_x86_64/lib/libcrypto.a -ldl -lz" \
+          ac_cv_func_SSL_CTX_new=yes \
+          ac_cv_func_EVP_aes_256_gcm=yes \
+          ac_cv_lib_capng_capng_clear=no \
+          ac_cv_header_cap_ng_h=no
+          
+        make -j$(nproc)
+        make install
+        
+    - name: Create JNI wrapper
+      run: |
+        mkdir -p src_lib
+        cat > src_lib/libopenvpn.c << 'EOF'
+        #include <jni.h>
+        #include <stdlib.h>
+        #include <unistd.h>
+        #include <string.h>
+        #include <sys/wait.h>
+        #include <android/log.h>
+        
+        #define LOG_TAG "OpenVPN"
+        #define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, __VA_ARGS__)
+        #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
+        
+        static pid_t openvpn_pid = -1;
+        
+        JNIEXPORT jint JNICALL
+        Java_com_yourpackage_OpenVPN_execOpenVPN(JNIEnv *env, jobject obj, jstring command) {
+            const char *cmd = (*env)->GetStringUTFChars(env, command, 0);
+            LOGD("Executing OpenVPN command: %s", cmd);
+            int result = system(cmd);
+            (*env)->ReleaseStringUTFChars(env, command, cmd);
+            return result;
+        }
+        
+        JNIEXPORT jint JNICALL
+        Java_com_yourpackage_OpenVPN_startOpenVPN(JNIEnv *env, jobject obj, jstring configPath, jstring binaryPath) {
+            if (openvpn_pid > 0) {
+                LOGE("OpenVPN already running with PID %d", openvpn_pid);
+                return -1;
+            }
+            const char *config = (*env)->GetStringUTFChars(env, configPath, 0);
+            const char *bin = (*env)->GetStringUTFChars(env, binaryPath, 0);
+            LOGD("Starting OpenVPN with binary: %s, config: %s", bin, config);
+            
+            char cmd[1024];
+            snprintf(cmd, sizeof(cmd), "%s --config %s", bin, config);
+            
+            openvpn_pid = fork();
+            if (openvpn_pid == -1) {
+                LOGE("Fork failed");
+                (*env)->ReleaseStringUTFChars(env, configPath, config);
+                (*env)->ReleaseStringUTFChars(env, binaryPath, bin);
+                return -1;
+            }
+            if (openvpn_pid == 0) {
+                execl(bin, bin, "--config", config, NULL);
+                LOGE("execl failed");
+                exit(1);
+            }
+            
+            (*env)->ReleaseStringUTFChars(env, configPath, config);
+            (*env)->ReleaseStringUTFChars(env, binaryPath, bin);
+            return openvpn_pid;
+        }
+        
+        JNIEXPORT void JNICALL
+        Java_com_yourpackage_OpenVPN_stopOpenVPN(JNIEnv *env, jobject obj) {
+            if (openvpn_pid > 0) {
+                LOGD("Stopping OpenVPN with PID %d", openvpn_pid);
+                kill(openvpn_pid, SIGTERM);
+                waitpid(openvpn_pid, NULL, 0);
+                openvpn_pid = -1;
+            }
+        }
+        EOF
+        
+    - name: Create shared libraries
+      run: |
+        mkdir -p android_libs/lib/arm64-v8a android_libs/lib/armeabi-v7a android_libs/lib/x86 android_libs/lib/x86_64
+        
+        # ARM64
+        aarch64-linux-android21-clang -shared -fPIC \
+          -Wl,-z,max-page-size=0x4000 \
+          -I$PWD/build/openssl_arm64/include \
+          -L$PWD/build/openssl_arm64/lib \
+          -llog -lssl -lcrypto \
+          -o android_libs/lib/arm64-v8a/libopenvpn.so \
+          src_lib/libopenvpn.c
+        cp android_libs/lib/arm64-v8a/libopenvpn.so android_libs/lib/arm64-v8a/libopvpnutil.so
+        cp android_libs/lib/arm64-v8a/libopenvpn.so android_libs/lib/arm64-v8a/libovpnexec.so
+        
+        # ARM
+        armv7a-linux-androideabi21-clang -shared -fPIC \
+          -Wl,-z,max-page-size=0x4000 \
+          -I$PWD/build/openssl_arm/include \
+          -L$PWD/build/openssl_arm/lib \
+          -llog -lssl -lcrypto \
+          -o android_libs/lib/armeabi-v7a/libopenvpn.so \
+          src_lib/libopenvpn.c
+        cp android_libs/lib/armeabi-v7a/libopenvpn.so android_libs/lib/armeabi-v7a/libopvpnutil.so
+        cp android_libs/lib/armeabi-v7a/libopenvpn.so android_libs/lib/armeabi-v7a/libovpnexec.so
+        
+        # x86
+        i686-linux-android21-clang -shared -fPIC \
+          -Wl,-z,max-page-size=0x4000 \
+          -I$PWD/build/openssl_x86/include \
+          -L$PWD/build/openssl_x86/lib \
+          -llog -lssl -lcrypto \
+          -o android_libs/lib/x86/libopenvpn.so \
+          src_lib/libopenvpn.c
+        cp android_libs/lib/x86/libopenvpn.so android_libs/lib/x86/libopvpnutil.so
+        cp android_libs/lib/x86/libopenvpn.so android_libs/lib/x86/libovpnexec.so
+        
+        # x86_64
+        x86_64-linux-android21-clang -shared -fPIC \
+          -Wl,-z,max-page-size=0x4000 \
+          -I$PWD/build/openssl_x86_64/include \
+          -L$PWD/build/openssl_x86_64/lib \
+          -llog -lssl -lcrypto \
+          -o android_libs/lib/x86_64/libopenvpn.so \
+          src_lib/libopenvpn.c
+        cp android_libs/lib/x86_64/libopenvpn.so android_libs/lib/x86_64/libopvpnutil.so
+        cp android_libs/lib/x86_64/libopenvpn.so android_libs/lib/x86_64/libovpnexec.so
+        
+    - name: Create PIE and NOPIE versions
+      run: |
+        mkdir -p android_libs/assets
+        
+        # Copy ARM64 binaries
+        cp build/openvpn_arm64/install/sbin/openvpn android_libs/assets/pie_openvpn.arm64-v8a
+        cp build/openvpn_arm64/install/sbin/openvpn android_libs/assets/nopie_openvpn.arm64-v8a
+        
+        # Copy ARM binaries
+        cp build/openvpn_arm/install/sbin/openvpn android_libs/assets/pie_openvpn.armeabi-v7a
+        cp build/openvpn_arm/install/sbin/openvpn android_libs/assets/nopie_openvpn.armeabi-v7a
+        
+        # Copy x86 binaries
+        cp build/openvpn_x86/install/sbin/openvpn android_libs/assets/pie_openvpn.x86
+        cp build/openvpn_x86/install/sbin/openvpn android_libs/assets/nopie_openvpn.x86
+        
+        # Copy x86_64 binaries
+        cp build/openvpn_x86_64/install/sbin/openvpn android_libs/assets/pie_openvpn.x86_64
+        cp build/openvpn_x86_64/install/sbin/openvpn android_libs/assets/nopie_openvpn.x86_64
+        
+        # Strip binaries with fallback to llvm-strip
+        if [ -f "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android-strip" ]; then
+          $ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android-strip android_libs/assets/*arm64-v8a
+        else
+          $ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip android_libs/assets/*arm64-v8a
+        fi
+        if [ -f "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/arm-linux-androideabi-strip" ]; then
+          $ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/arm-linux-androideabi-strip android_libs/assets/*armeabi-v7a
+        else
+          $ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip android_libs/assets/*armeabi-v7a
+        fi
+        if [ -f "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/i686-linux-android-strip" ]; then
+          $ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/i686-linux-android-strip android_libs/assets/*x86
+        else
+          $ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip android_libs/assets/*x86
+        fi
+        if [ -f "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/x86_64-linux-android-strip" ]; then
+          $ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/x86_64-linux-android-strip android_libs/assets/*x86_64
+        else
+          $ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip android_libs/assets/*x86_64
+        fi
+        
+    - name: Verify 16KB alignment
+      run: |
+        echo "Checking 16KB alignment for all binaries and libraries..."
+        
+        echo "=== Checking OpenVPN executables ==="
+        for file in android_libs/assets/*; do
+          if [ -f "$file" ]; then
+            echo "File: $file"
+            file "$file"
+            size=$(stat -c%s "$file")
+            echo "Size: $size bytes"
+            if file "$file" | grep -q "ELF"; then
+              echo "Program headers:"
+              readelf -l "$file" | grep -E "(LOAD|INTERP)" || echo "No LOAD segments found"
+            fi
+            echo "---"
+          fi
+        done
+        
+        echo "=== Checking shared libraries ==="
+        for file in android_libs/lib/*/*.so; do
+          if [ -f "$file" ]; then
+            echo "File: $file"
+            file "$file"
+            size=$(stat -c%s "$file")
+            echo "Size: $size bytes"
+            echo "Program headers:"
+            readelf -l "$file" | grep -E "(LOAD|INTERP)" || echo "No LOAD segments found"
+            echo "---"
+          fi
+        done
+        
+    - name: Create release archive
+      run: |
+        tar -czf openvpn-android-libs.tar.gz android_libs/
+        
+    - name: List final structure
+      run: |
+        echo "Final library structure:"
+        find android_libs -type f -exec ls -la {} \;
+        
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: openvpn-android-libs
+        path: |
+          android_libs/
+          openvpn-android-libs.tar.gz
+        retention-days: 30
