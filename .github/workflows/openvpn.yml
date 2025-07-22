@@ -114,7 +114,7 @@ jobs:
         sed -i 's/capng_apply(CAPNG_SELECT_BOTH);//g' src/openvpn/platform.c
         # Patch configure script to skip libcap-ng check
         sed -i '/checking for LIBCAPNG/,/;;/ s/^/#/' configure
-        # Fallback: Create a dummy libcap-ng.pc to bypass pkg-config
+        # Create dummy libcap-ng.pc
         mkdir -p dummy_pkgconfig
         cat > dummy_pkgconfig/libcap-ng.pc << 'EOF'
         prefix=/usr
@@ -179,6 +179,10 @@ jobs:
           ac_cv_search_capng_clear=no \
           have_capng=no
         
+        # Build static library and executable
+        make -j$(nproc) libopenvpn.a
+        mkdir -p install/lib
+        cp src/openvpn/.libs/libopenvpn.a install/lib/
         make -j$(nproc)
         make install
         
@@ -225,7 +229,11 @@ jobs:
           ac_cv_func_EVP_aes_256_gcm=yes \
           ac_cv_lib_capng_capng_clear=no \
           ac_cv_header_cap_ng_h=no
-          
+        
+        # Build static library and executable
+        make -j$(nproc) libopenvpn.a
+        mkdir -p install/lib
+        cp src/openvpn/.libs/libopenvpn.a install/lib/
         make -j$(nproc)
         make install
         
@@ -272,7 +280,11 @@ jobs:
           ac_cv_func_EVP_aes_256_gcm=yes \
           ac_cv_lib_capng_capng_clear=no \
           ac_cv_header_cap_ng_h=no
-          
+        
+        # Build static library and executable
+        make -j$(nproc) libopenvpn.a
+        mkdir -p install/lib
+        cp src/openvpn/.libs/libopenvpn.a install/lib/
         make -j$(nproc)
         make install
         
@@ -319,7 +331,11 @@ jobs:
           ac_cv_func_EVP_aes_256_gcm=yes \
           ac_cv_lib_capng_capng_clear=no \
           ac_cv_header_cap_ng_h=no
-          
+        
+        # Build static library and executable
+        make -j$(nproc) libopenvpn.a
+        mkdir -p install/lib
+        cp src/openvpn/.libs/libopenvpn.a install/lib/
         make -j$(nproc)
         make install
         
@@ -335,35 +351,52 @@ jobs:
         #include <string.h>
         #include <sys/stat.h>
         #include <errno.h>
+        #include <signal.h>
         // OpenVPN headers
         #include "openvpn-2.6.9/include/openvpn-plugin.h"
         #include "openvpn-2.6.9/src/openvpn/main.c"
         #define LOG_TAG "OpenVPN"
         #define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, __VA_ARGS__)
         #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
-        static int openvpn_running = 0;
+        static volatile sig_atomic_t openvpn_running = 0;
+        
+        // Signal handler for SIGINT/SIGTERM to stop OpenVPN
+        static void signal_handler(int signum) {
+            openvpn_running = 0;
+        }
         
         JNIEXPORT jint JNICALL Java_com_hidemyip_openvpn_core_OpenVPNThread_startOpenVPN(JNIEnv *env, jobject obj, jstring configPath) {
             const char *config = (*env)->GetStringUTFChars(env, configPath, 0);
             LOGD("Starting OpenVPN with config: %s", config);
+            
+            // Verify config file existence
             struct stat st;
-            if (stat(config, &st) == 0) {
-                LOGD("Config exists, permissions: %o", st.st_mode);
-            } else {
+            if (stat(config, &st) != 0) {
                 LOGE("Config not found or inaccessible: %s", strerror(errno));
                 (*env)->ReleaseStringUTFChars(env, configPath, config);
                 return -1;
             }
+            LOGD("Config exists, permissions: %o", st.st_mode);
+            
+            // Set up signal handlers
+            signal(SIGINT, signal_handler);
+            signal(SIGTERM, signal_handler);
+            
+            // Prepare OpenVPN arguments
             char *argv[] = {"openvpn", "--config", (char *)config, NULL};
             int argc = 3;
+            
+            // Call OpenVPN main function
             openvpn_running = 1;
             int result = openvpn_main(argc, argv);
+            
             if (result != 0) {
                 LOGE("OpenVPN failed with exit code: %d", result);
                 openvpn_running = 0;
             } else {
-                LOGD("OpenVPN running successfully");
+                LOGD("OpenVPN completed successfully");
             }
+            
             (*env)->ReleaseStringUTFChars(env, configPath, config);
             return result == 0 ? 0 : -1;
         }
@@ -371,11 +404,11 @@ jobs:
         JNIEXPORT void JNICALL Java_com_hidemyip_openvpn_core_OpenVPNThread_stopOpenVPN(JNIEnv *env, jobject obj) {
             if (openvpn_running) {
                 LOGD("Stopping OpenVPN");
-                openvpn_running = 0;
+                openvpn_running = 0; // Signal openvpn_main to stop
             }
         }
         EOF
-    
+        
     - name: Create shared libraries
       run: |
         mkdir -p android_libs/lib/arm64-v8a android_libs/lib/armeabi-v7a android_libs/lib/x86 android_libs/lib/x86_64
@@ -386,7 +419,7 @@ jobs:
           -I$PWD/build/openssl_arm64/include \
           -L$PWD/build/openssl_arm64/lib \
           -L$PWD/build/openvpn_arm64/install/lib \
-          -llog -lssl -lcrypto -lopenvpn \
+          -llog -lssl -lcrypto \
           -o android_libs/lib/arm64-v8a/libopenvpn.so \
           src_lib/libopenvpn.c \
           $PWD/build/openvpn_arm64/install/lib/libopenvpn.a
@@ -399,7 +432,7 @@ jobs:
           -I$PWD/build/openssl_arm/include \
           -L$PWD/build/openssl_arm/lib \
           -L$PWD/build/openvpn_arm/install/lib \
-          -llog -lssl -lcrypto -lopenvpn \
+          -llog -lssl -lcrypto \
           -o android_libs/lib/armeabi-v7a/libopenvpn.so \
           src_lib/libopenvpn.c \
           $PWD/build/openvpn_arm/install/lib/libopenvpn.a
@@ -412,7 +445,7 @@ jobs:
           -I$PWD/build/openssl_x86/include \
           -L$PWD/build/openssl_x86/lib \
           -L$PWD/build/openvpn_x86/install/lib \
-          -llog -lssl -lcrypto -lopenvpn \
+          -llog -lssl -lcrypto \
           -o android_libs/lib/x86/libopenvpn.so \
           src_lib/libopenvpn.c \
           $PWD/build/openvpn_x86/install/lib/libopenvpn.a
@@ -425,7 +458,7 @@ jobs:
           -I$PWD/build/openssl_x86_64/include \
           -L$PWD/build/openssl_x86_64/lib \
           -L$PWD/build/openvpn_x86_64/install/lib \
-          -llog -lssl -lcrypto -lopenvpn \
+          -llog -lssl -lcrypto \
           -o android_libs/lib/x86_64/libopenvpn.so \
           src_lib/libopenvpn.c \
           $PWD/build/openvpn_x86_64/install/lib/libopenvpn.a
