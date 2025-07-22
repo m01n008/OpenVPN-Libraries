@@ -333,6 +333,7 @@ jobs:
         #include <stdio.h>
         #include <stdlib.h>
         #include <string.h>
+        #include <sys/stat.h>
 
         #define LOG_TAG "OpenVPN"
         #define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, __VA_ARGS__)
@@ -353,27 +354,41 @@ jobs:
         Java_com_hidemyip_openvpn_core_OpenVPNThread_startOpenVPN(JNIEnv *env, jobject obj, jstring configPath, jstring binaryPath) {
             const char *config = (*env)->GetStringUTFChars(env, configPath, 0);
             const char *bin = (*env)->GetStringUTFChars(env, binaryPath, 0);
-
+        
             LOGD("Starting OpenVPN with binary: %s and config: %s", bin, config);
-
+        
+            // Verify file existence and permissions
+            struct stat st;
+            if (stat(bin, &st) == 0) {
+                LOGD("Binary exists, permissions: %o", st.st_mode);
+            } else {
+                LOGE("Binary not found or inaccessible: %s", strerror(errno));
+            }
+            if (stat(config, &st) == 0) {
+                LOGD("Config exists, permissions: %o", st.st_mode);
+            } else {
+                LOGE("Config not found or inaccessible: %s", strerror(errno));
+            }
+        
             char cmd[1024];
-            snprintf(cmd, sizeof(cmd), "/system/bin/sh -c \"%s --config %s\"", bin, config);
-
+            snprintf(cmd, sizeof(cmd), "%s --config %s", bin, config);
+        
             openvpn_pid = fork();
             if (openvpn_pid < 0) {
-            LOGE("Fork failed: %s", strerror(errno));
-            (*env)->ReleaseStringUTFChars(env, configPath, config);
-            (*env)->ReleaseStringUTFChars(env, binaryPath, bin);
-            return -1;
-          }
-
-            if (openvpn_pid == 0) {
-            // Child process
-            execl("/system/bin/sh", "/system/bin/sh", "-c", cmd, NULL);
-            LOGE("execl failed: %s", strerror(errno));
-            _exit(127);
+                LOGE("Fork failed: %s", strerror(errno));
+                (*env)->ReleaseStringUTFChars(env, configPath, config);
+                (*env)->ReleaseStringUTFChars(env, binaryPath, bin);
+                return -1;
             }
-
+        
+            if (openvpn_pid == 0) {
+                // Child process
+                LOGD("Executing command: /system/bin/sh -c \"%s\"", cmd);
+                execl("/system/bin/sh", "/system/bin/sh", "-c", cmd, NULL);
+                LOGE("execl failed: %s", strerror(errno));
+                _exit(127);
+            }
+        
             // Parent process
             (*env)->ReleaseStringUTFChars(env, configPath, config);
             (*env)->ReleaseStringUTFChars(env, binaryPath, bin);
@@ -381,11 +396,11 @@ jobs:
         }
         
         JNIEXPORT void JNICALL
-        JNIEXPORT void JNICALL Java_com_hidemyip_openvpn_core_OpenVPNThread_stopOpenVPN(JNIEnv *env, jobject obj) {
+        Java_com_hidemyip_openvpn_core_OpenVPNThread_stopOpenVPN(JNIEnv *env, jobject obj) {
             if (openvpn_pid > 0) {
-            LOGD("Stopping OpenVPN process with PID: %d", openvpn_pid);
-            kill(openvpn_pid, SIGTERM);
-            openvpn_pid = -1;
+                LOGD("Stopping OpenVPN process with PID: %d", openvpn_pid);
+                kill(openvpn_pid, SIGTERM);
+                openvpn_pid = -1;
             }
         }
         EOF
