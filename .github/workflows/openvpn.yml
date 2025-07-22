@@ -341,7 +341,7 @@ jobs:
         static pid_t openvpn_pid = -1;
         
         JNIEXPORT jint JNICALL
-        Java_com_yourpackage_OpenVPN_execOpenVPN(JNIEnv *env, jobject obj, jstring command) {
+        Java_com_hidemyip_openvpn_core_OpenVPNThread_execOpenVPN(JNIEnv *env, jobject obj, jstring command) {
             const char *cmd = (*env)->GetStringUTFChars(env, command, 0);
             LOGD("Executing OpenVPN command: %s", cmd);
             int result = system(cmd);
@@ -350,7 +350,7 @@ jobs:
         }
         
         JNIEXPORT jint JNICALL
-        Java_com_yourpackage_OpenVPN_startOpenVPN(JNIEnv *env, jobject obj, jstring configPath, jstring binaryPath) {
+        Java_com_hidemyip_openvpn_core_OpenVPNThread_startOpenVPN(JNIEnv *env, jobject obj, jstring configPath, jstring binaryPath) {
             if (openvpn_pid > 0) {
                 LOGE("OpenVPN already running with PID %d", openvpn_pid);
                 return -1;
@@ -381,7 +381,7 @@ jobs:
         }
         
         JNIEXPORT void JNICALL
-        Java_com_yourpackage_OpenVPN_stopOpenVPN(JNIEnv *env, jobject obj) {
+        Java_com_hidemyip_openvpn_core_OpenVPNThread_stopOpenVPN(JNIEnv *env, jobject obj) {
             if (openvpn_pid > 0) {
                 LOGD("Stopping OpenVPN with PID %d", openvpn_pid);
                 kill(openvpn_pid, SIGTERM);
