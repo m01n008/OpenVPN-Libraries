@@ -333,124 +333,102 @@ jobs:
         #include <stdio.h>
         #include <stdlib.h>
         #include <string.h>
-        #include <errno.h>
         #include <sys/stat.h>
-
+        #include <errno.h>
+        // OpenVPN headers
+        #include "openvpn-2.6.9/include/openvpn-plugin.h"
+        #include "openvpn-2.6.9/src/openvpn/main.c"
         #define LOG_TAG "OpenVPN"
         #define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, __VA_ARGS__)
         #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
-
-        static pid_t openvpn_pid = -1;
+        static int openvpn_running = 0;
         
-        JNIEXPORT jint JNICALL
-        Java_com_hidemyip_openvpn_core_OpenVPNThread_execOpenVPN(JNIEnv *env, jobject obj, jstring command) {
-            const char *cmd = (*env)->GetStringUTFChars(env, command, 0);
-            LOGD("Executing OpenVPN command: %s", cmd);
-            int result = system(cmd);
-            (*env)->ReleaseStringUTFChars(env, command, cmd);
-            return result;
-        }
-        
-        JNIEXPORT jint JNICALL
-        Java_com_hidemyip_openvpn_core_OpenVPNThread_startOpenVPN(JNIEnv *env, jobject obj, jstring configPath, jstring binaryPath) {
+        JNIEXPORT jint JNICALL Java_com_hidemyip_openvpn_core_OpenVPNThread_startOpenVPN(JNIEnv *env, jobject obj, jstring configPath) {
             const char *config = (*env)->GetStringUTFChars(env, configPath, 0);
-            const char *bin = (*env)->GetStringUTFChars(env, binaryPath, 0);
-        
-            LOGD("Starting OpenVPN with binary: %s and config: %s", bin, config);
-        
-            // Verify file existence and permissions
+            LOGD("Starting OpenVPN with config: %s", config);
             struct stat st;
-            if (stat(bin, &st) == 0) {
-                LOGD("Binary exists, permissions: %o", st.st_mode);
-            } else {
-                LOGE("Binary not found or inaccessible: %s", strerror(errno));
-            }
             if (stat(config, &st) == 0) {
                 LOGD("Config exists, permissions: %o", st.st_mode);
             } else {
                 LOGE("Config not found or inaccessible: %s", strerror(errno));
-            }
-        
-            char cmd[1024];
-            snprintf(cmd, sizeof(cmd), "%s --config %s", bin, config);
-        
-            openvpn_pid = fork();
-            if (openvpn_pid < 0) {
-                LOGE("Fork failed: %s", strerror(errno));
                 (*env)->ReleaseStringUTFChars(env, configPath, config);
-                (*env)->ReleaseStringUTFChars(env, binaryPath, bin);
                 return -1;
             }
-        
-            if (openvpn_pid == 0) {
-                // Child process
-                LOGD("Executing command: /system/bin/sh -c \"%s\"", cmd);
-                execl("/system/bin/sh", "/system/bin/sh", "-c", cmd, NULL);
-                LOGE("execl failed: %s", strerror(errno));
-                _exit(127);
+            char *argv[] = {"openvpn", "--config", (char *)config, NULL};
+            int argc = 3;
+            openvpn_running = 1;
+            int result = openvpn_main(argc, argv);
+            if (result != 0) {
+                LOGE("OpenVPN failed with exit code: %d", result);
+                openvpn_running = 0;
+            } else {
+                LOGD("OpenVPN running successfully");
             }
-        
-            // Parent process
             (*env)->ReleaseStringUTFChars(env, configPath, config);
-            (*env)->ReleaseStringUTFChars(env, binaryPath, bin);
-            return openvpn_pid;
+            return result == 0 ? 0 : -1;
         }
         
-        JNIEXPORT void JNICALL
-        Java_com_hidemyip_openvpn_core_OpenVPNThread_stopOpenVPN(JNIEnv *env, jobject obj) {
-            if (openvpn_pid > 0) {
-                LOGD("Stopping OpenVPN process with PID: %d", openvpn_pid);
-                kill(openvpn_pid, SIGTERM);
-                openvpn_pid = -1;
+        JNIEXPORT void JNICALL Java_com_hidemyip_openvpn_core_OpenVPNThread_stopOpenVPN(JNIEnv *env, jobject obj) {
+            if (openvpn_running) {
+                LOGD("Stopping OpenVPN");
+                openvpn_running = 0;
             }
         }
         EOF
-        
+    
     - name: Create shared libraries
       run: |
         mkdir -p android_libs/lib/arm64-v8a android_libs/lib/armeabi-v7a android_libs/lib/x86 android_libs/lib/x86_64
         
         # ARM64
         aarch64-linux-android21-clang -shared -fPIC \
-          -Wl,-z,max-page-size=0x4000 \
+          -I$PWD/build/openvpn-2.6.9/include \
           -I$PWD/build/openssl_arm64/include \
           -L$PWD/build/openssl_arm64/lib \
-          -llog -lssl -lcrypto \
+          -L$PWD/build/openvpn_arm64/install/lib \
+          -llog -lssl -lcrypto -lopenvpn \
           -o android_libs/lib/arm64-v8a/libopenvpn.so \
-          src_lib/libopenvpn.c
+          src_lib/libopenvpn.c \
+          $PWD/build/openvpn_arm64/install/lib/libopenvpn.a
         cp android_libs/lib/arm64-v8a/libopenvpn.so android_libs/lib/arm64-v8a/libopvpnutil.so
         cp android_libs/lib/arm64-v8a/libopenvpn.so android_libs/lib/arm64-v8a/libovpnexec.so
         
         # ARM
         armv7a-linux-androideabi21-clang -shared -fPIC \
-          -Wl,-z,max-page-size=0x4000 \
+          -I$PWD/build/openvpn-2.6.9/include \
           -I$PWD/build/openssl_arm/include \
           -L$PWD/build/openssl_arm/lib \
-          -llog -lssl -lcrypto \
+          -L$PWD/build/openvpn_arm/install/lib \
+          -llog -lssl -lcrypto -lopenvpn \
           -o android_libs/lib/armeabi-v7a/libopenvpn.so \
-          src_lib/libopenvpn.c
+          src_lib/libopenvpn.c \
+          $PWD/build/openvpn_arm/install/lib/libopenvpn.a
         cp android_libs/lib/armeabi-v7a/libopenvpn.so android_libs/lib/armeabi-v7a/libopvpnutil.so
         cp android_libs/lib/armeabi-v7a/libopenvpn.so android_libs/lib/armeabi-v7a/libovpnexec.so
         
         # x86
         i686-linux-android21-clang -shared -fPIC \
-          -Wl,-z,max-page-size=0x4000 \
+          -I$PWD/build/openvpn-2.6.9/include \
           -I$PWD/build/openssl_x86/include \
           -L$PWD/build/openssl_x86/lib \
-          -llog -lssl -lcrypto \
+          -L$PWD/build/openvpn_x86/install/lib \
+          -llog -lssl -lcrypto -lopenvpn \
           -o android_libs/lib/x86/libopenvpn.so \
-          src_lib/libopenvpn.c
+          src_lib/libopenvpn.c \
+          $PWD/build/openvpn_x86/install/lib/libopenvpn.a
         cp android_libs/lib/x86/libopenvpn.so android_libs/lib/x86/libopvpnutil.so
         cp android_libs/lib/x86/libopenvpn.so android_libs/lib/x86/libovpnexec.so
         
         # x86_64
         x86_64-linux-android21-clang -shared -fPIC \
-          -Wl,-z,max-page-size=0x4000 \
+          -I$PWD/build/openvpn-2.6.9/include \
           -I$PWD/build/openssl_x86_64/include \
           -L$PWD/build/openssl_x86_64/lib \
-          -llog -lssl -lcrypto \
+          -L$PWD/build/openvpn_x86_64/install/lib \
+          -llog -lssl -lcrypto -lopenvpn \
           -o android_libs/lib/x86_64/libopenvpn.so \
-          src_lib/libopenvpn.c
+          src_lib/libopenvpn.c \
+          $PWD/build/openvpn_x86_64/install/lib/libopenvpn.a
         cp android_libs/lib/x86_64/libopenvpn.so android_libs/lib/x86_64/libopvpnutil.so
         cp android_libs/lib/x86_64/libopenvpn.so android_libs/lib/x86_64/libovpnexec.so
         
