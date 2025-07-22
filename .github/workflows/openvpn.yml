@@ -176,6 +176,9 @@ jobs:
         
         make -j$(nproc)
         make install
+        # Copy generated headers for shared library compilation
+        mkdir -p $PWD/../../openvpn_headers_arm64
+        cp -r config.h compat.h $PWD/../../openvpn_headers_arm64/ || true
         
     - name: Build OpenVPN for ARM
       run: |
@@ -220,6 +223,9 @@ jobs:
         
         make -j$(nproc)
         make install
+        # Copy generated headers
+        mkdir -p $PWD/../../openvpn_headers_arm
+        cp -r config.h compat.h $PWD/../../openvpn_headers_arm/ || true
         
     - name: Build OpenVPN for x86
       run: |
@@ -264,6 +270,9 @@ jobs:
         
         make -j$(nproc)
         make install
+        # Copy generated headers
+        mkdir -p $PWD/../../openvpn_headers_x86
+        cp -r config.h compat.h $PWD/../../openvpn_headers_x86/ || true
         
     - name: Build OpenVPN for x86_64
       run: |
@@ -308,6 +317,9 @@ jobs:
         
         make -j$(nproc)
         make install
+        # Copy generated headers
+        mkdir -p $PWD/../../openvpn_headers_x86_64
+        cp -r config.h compat.h $PWD/../../openvpn_headers_x86_64/ || true
         
     - name: Create JNI wrapper
       run: |
@@ -322,7 +334,7 @@ jobs:
         #include <sys/stat.h>
         #include <errno.h>
         #include <signal.h>
-        #include "openvpn-2.6.9/src/openvpn/main.c"
+        #include "openvpn/main.c"
         #define LOG_TAG "OpenVPN"
         #define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, __VA_ARGS__)
         #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
@@ -380,6 +392,8 @@ jobs:
         aarch64-linux-android21-clang -shared -fPIC \
           -I$PWD/build/openvpn-2.6.9/include \
           -I$PWD/build/openvpn-2.6.9/src \
+          -I$PWD/build/openvpn-2.6.9/src/compat \
+          -I$PWD/build/openvpn_headers_arm64 \
           -I$PWD/build/openssl_arm64/include \
           -L$PWD/build/openssl_arm64/lib \
           -llog -lssl -lcrypto -lz -ldl \
@@ -393,6 +407,8 @@ jobs:
         armv7a-linux-androideabi21-clang -shared -fPIC \
           -I$PWD/build/openvpn-2.6.9/include \
           -I$PWD/build/openvpn-2.6.9/src \
+          -I$PWD/build/openvpn-2.6.9/src/compat \
+          -I$PWD/build/openvpn_headers_arm \
           -I$PWD/build/openssl_arm/include \
           -L$PWD/build/openssl_arm/lib \
           -llog -lssl -lcrypto -lz -ldl \
@@ -406,6 +422,8 @@ jobs:
         i686-linux-android21-clang -shared -fPIC \
           -I$PWD/build/openvpn-2.6.9/include \
           -I$PWD/build/openvpn-2.6.9/src \
+          -I$PWD/build/openvpn-2.6.9/src/compat \
+          -I$PWD/build/openvpn_headers_x86 \
           -I$PWD/build/openssl_x86/include \
           -L$PWD/build/openssl_x86/lib \
           -llog -lssl -lcrypto -lz -ldl \
@@ -419,6 +437,8 @@ jobs:
         x86_64-linux-android21-clang -shared -fPIC \
           -I$PWD/build/openvpn-2.6.9/include \
           -I$PWD/build/openvpn-2.6.9/src \
+          -I$PWD/build/openvpn-2.6.9/src/compat \
+          -I$PWD/build/openvpn_headers_x86_64 \
           -I$PWD/build/openssl_x86_64/include \
           -L$PWD/build/openssl_x86_64/lib \
           -llog -lssl -lcrypto -lz -ldl \
@@ -480,7 +500,7 @@ jobs:
             echo "File: $file"
             file "$file"
             size=$(stat -c%s "$file")
-            echo "Size: $size bytes"
+            echo "Size: $file bytes"
             if file "$file" | grep -q "ELF"; then
               echo "Program headers:"
               readelf -l "$file" | grep -E "(LOAD|INTERP)" || echo "No LOAD segments found"
@@ -495,7 +515,7 @@ jobs:
             echo "File: $file"
             file "$file"
             size=$(stat -c%s "$file")
-            echo "Size: $size bytes"
+            echo "Size: $file bytes"
             echo "Program headers:"
             readelf -l "$file" | grep -E "(LOAD|INTERP)" || echo "No LOAD segments found"
             echo "---"
