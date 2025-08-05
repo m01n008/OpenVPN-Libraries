@@ -295,7 +295,7 @@ jobs:
         static pid_t openvpn_pid = -1;
         
         JNIEXPORT jint JNICALL
-        JNIEXPORT jint JNICALL Java_com_hidemyip_openvpn_core_OpenVPNThread_startOpenVPN(JNIEnv *env, jobject obj, jstring configPath, jstring binaryPath, jstring authPath) {
+        Java_com_hidemyip_openvpn_core_OpenVPNThread_startOpenVPN(JNIEnv *env, jobject obj, jstring configPath, jstring binaryPath, jstring authPath) {
             const char *config = (*env)->GetStringUTFChars(env, configPath, NULL);
             const char *binary = (*env)->GetStringUTFChars(env, binaryPath, NULL);
             const char *auth = (*env)->GetStringUTFChars(env, authPath, NULL);
